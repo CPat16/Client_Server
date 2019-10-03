@@ -24,6 +24,8 @@ class Server(Thread):
     # create UDP server socket
     self.server_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
 
+    self.server_socket.settimeout(2)
+
     # bind to the socket
     try:
       self.server_socket.bind(server_addr)
@@ -32,15 +34,24 @@ class Server(Thread):
     except:
       print("Server bind failed to port", server_port)
 
-  def send_img(self, filename, addr):
+  def send_img(self, filename):
     """
     Sends the image packet by packet
 
     Parameters:
       filename - file to send
-      addr - destination address
     """
     pkt = b''                          # packet of byte string data
+
+    # Get size of the image to send
+    img_size = os.path.getsize(self.img_to_send)
+
+    # send image size in bytes to client
+    self.server_socket.sendto(img_size.to_bytes(8, 'big'), self.client_addr)
+
+    # confirm client received size
+    msg = self.server_socket.recvfrom(self.pkt_size)
+    print("Server: Client says {}".format(msg[0].decode()))
 
     # open file to be sent
     print("Server: Sending image to client")
@@ -49,29 +60,35 @@ class Server(Thread):
 
       # send data until end of file reached
       while pkt:
-        self.server_socket.sendto(pkt, addr)
+        self.server_socket.sendto(pkt, self.client_addr)
         pkt = img.read(self.pkt_size)
 
-  def recv_img(self, filename, img_size):
+  def recv_img(self, filename):
     """
     Receive an image packet by packet
     Saves image to specified file
 
     Parameters:
       filename - file location to save image
-      img_size - size of image
     """
-    pkt = b''                          # packet of byte string data
+    recv_data = b''                          # packet of byte string data
+
+    # receive image size from client
+    img_size_bytes = self.server_socket.recv(self.pkt_size)
+    img_size = int.from_bytes(img_size_bytes, 'big')
+    
+    # let the client know size of image has been received
+    self.server_socket.sendto(str.encode("Size recieved"), self.client_addr)
 
     # get image data from server until all data received
     while img_size > 0:
-      recv_data = self.server_socket.recv(self.pkt_size)
-      pkt += recv_data
-      img_size -= len(recv_data)
+      pkt = self.server_socket.recv(self.pkt_size)
+      recv_data += pkt
+      img_size -= len(pkt)
     
     # write data into a file
     with open(filename, 'wb+') as server_img:
-      server_img.write(pkt)
+      server_img.write(recv_data)
     print("Server: Received and saved image")
 
   def run(self):
@@ -79,35 +96,37 @@ class Server(Thread):
     Runs when Server process has started
     """
     print("Server: Started")
-
-    # get hello and address from client
-    (msg, client_addr) = self.server_socket.recvfrom(self.pkt_size)
-    print("Server: Reached by client")
+    i = 0
     
-    # ------------------ Send image to client ------------------
-    # Get size of the image to send
-    img_size = os.path.getsize(self.img_to_send)
+    while True:
+      try:
+        # get request and address from client
+        (msg, self.client_addr) = self.server_socket.recvfrom(self.pkt_size)
+        msg = msg.decode()
+        print("Server: Client request:", msg)
 
-    # send image size in bytes to client
-    self.server_socket.sendto(img_size.to_bytes(8, 'big'), client_addr)
+        # ------------------ Send image to client ------------------
+        if msg == "download":
+          self.send_img(self.img_to_send)
 
-    # confirm client received size
-    msg = self.server_socket.recvfrom(self.pkt_size)
-    print("Server: Client says {}".format(msg[0].decode()))
+        # ------------------ Get image from client ------------------
+        elif msg == "upload":
+          self.recv_img(self.img_save_to)
 
-    # sends image to client
-    self.send_img(self.img_to_send, client_addr)
+        # ------------------ Exit server process ------------------
+        elif msg == "exit":
+          print("Server: Exiting...")
+          break
 
-    # ------------------ Get reply image ------------------
-    # receive image size from client
-    img_size_bytes = self.server_socket.recv(self.pkt_size)
-    img_size = int.from_bytes(img_size_bytes, 'big')
-    
-    # let the client know size of image has been received
-    self.server_socket.sendto(str.encode("Size recieved"), client_addr)
-    
-    # receive image
-    self.recv_img(self.img_save_to, img_size)
+      except socket.timeout:
+        i = i + 1
+        if(i < 5):
+          print("Server: Ready")
+
+        # if the server has waited through 5 timeouts, exit
+        else:
+          print("Server: I'm tired of waiting")
+          break
 
     # close socket when finished
     self.server_socket.close()

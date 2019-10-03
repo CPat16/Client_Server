@@ -15,9 +15,10 @@ def client():
   
   # create UDP client socket
   client_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
-  
-  # Say hello to the server
-  client_socket.sendto(str.encode("Hello there"),server_addr)
+  client_socket.settimeout(2)
+
+  # Request image from server
+  client_socket.sendto(str.encode("download"),server_addr)
   
   # ------------------ Get image from server ------------------
   # receive image size from server
@@ -39,6 +40,9 @@ def client():
   print("Client: Received and saved image")
 
   # ------------------ Reply with image ------------------
+  # Request to send image to server
+  client_socket.sendto(str.encode("upload"),server_addr)
+
   # Get size of the image to send
   img_size = os.path.getsize(img_to_send)
 
@@ -58,6 +62,9 @@ def client():
     while img_data:
       client_socket.sendto(img_data, server_addr)
       img_data = img.read(buf_size)
+
+  # Tell server we're done here
+  client_socket.sendto(str.encode("exit"),server_addr)
   
   # close socket when finished
   client_socket.close()
