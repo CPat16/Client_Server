@@ -3,6 +3,7 @@ import socket
 import io
 import os
 import sys
+from time import sleep
 from threading import Thread
 
 import udp_client
@@ -15,7 +16,7 @@ class Server(Thread):
     Thread.__init__(self)                   # initializes as thread
     host_ip = '127.0.0.1'
     server_port = 20001
-    server_addr = (host_ip, server_port)    # address of server
+    server_addr = (host_ip, server_port)    # address of server (IP, Port)
 
     self.pkt_size = 1024                    # packet size
     self.img_to_send = 'hello.jpg'          # relative path of image to send
@@ -24,7 +25,7 @@ class Server(Thread):
     # create UDP server socket
     self.server_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
 
-    self.server_socket.settimeout(2)
+    self.server_socket.settimeout(10)       # Recieving sockets timeout after 10 seconds
 
     # bind to the socket
     try:
@@ -32,7 +33,7 @@ class Server(Thread):
       print("Server bound to port", server_port)
 
     except:
-      print("Server bind failed to port", server_port)
+      print("Server failed bind to port", server_port)
 
   def send_img(self, filename):
     """
@@ -43,16 +44,6 @@ class Server(Thread):
     """
     pkt = b''                          # packet of byte string data
 
-    # Get size of the image to send
-    img_size = os.path.getsize(self.img_to_send)
-
-    # send image size in bytes to client
-    self.server_socket.sendto(img_size.to_bytes(8, 'big'), self.client_addr)
-
-    # confirm client received size
-    msg = self.server_socket.recvfrom(self.pkt_size)
-    print("Server: Client says {}".format(msg[0].decode()))
-
     # open file to be sent
     print("Server: Sending image to client")
     with open(filename, 'rb') as img:
@@ -62,6 +53,7 @@ class Server(Thread):
       while pkt:
         self.server_socket.sendto(pkt, self.client_addr)
         pkt = img.read(self.pkt_size)
+        sleep(0.06)   # sleep for 60 ms
 
   def recv_img(self, filename):
     """
@@ -71,40 +63,59 @@ class Server(Thread):
     Parameters:
       filename - file location to save image
     """
-    recv_data = b''                          # packet of byte string data
-
-    # receive image size from client
-    img_size_bytes = self.server_socket.recv(self.pkt_size)
-    img_size = int.from_bytes(img_size_bytes, 'big')
-    
-    # let the client know size of image has been received
-    self.server_socket.sendto(str.encode("Size recieved"), self.client_addr)
+    recv_data = b''           # packet of byte string data
+    img_not_recvd = True      # flag to indicate if image has been recieved
 
     # get image data from server until all data received
-    while img_size > 0:
-      pkt = self.server_socket.recv(self.pkt_size)
-      recv_data += pkt
-      img_size -= len(pkt)
+    while True:
+      try:
+        print("Server: Ready to receive image")
+        pkt = self.server_socket.recv(self.pkt_size)
+        recv_data += pkt
+        if img_not_recvd:
+          img_not_recvd = False       # img data began streaming if it reaches this point
+      
+      except socket.timeout:
+        # if image not recieved yet, keep waiting
+        if img_not_recvd:
+          pass
+        # image has been recieved
+        else:
+          # write data into a file
+          with open(filename, 'wb+') as server_img:
+            server_img.write(recv_data)
+          print("Server: Received and saved image")
+          break   # exit loop
     
-    # write data into a file
-    with open(filename, 'wb+') as server_img:
-      server_img.write(recv_data)
-    print("Server: Received and saved image")
 
   def run(self):
     """
     Runs when Server process has started
     """
     print("Server: Started")
-    i = 0
+    i = 0       # index of timeouts
+    msg = ''    # set message to empty string
     
     while True:
       try:
+        print("Server: Ready")
         # get request and address from client
         (msg, self.client_addr) = self.server_socket.recvfrom(self.pkt_size)
+        i = 0   # reset timeout index
         msg = msg.decode()
         print("Server: Client request:", msg)
 
+      except socket.timeout:
+        i = i + 1
+        if(i < 6):
+          pass
+        # if the server has waited through 6 timeouts (60 seconds), exit
+        else:
+          print("Server: I'm tired of waiting")
+          break
+
+      # if any message recieved, then service it
+      if msg:
         # ------------------ Send image to client ------------------
         if msg == "download":
           self.send_img(self.img_to_send)
@@ -117,16 +128,10 @@ class Server(Thread):
         elif msg == "exit":
           print("Server: Exiting...")
           break
-
-      except socket.timeout:
-        i = i + 1
-        if(i < 5):
-          print("Server: Ready")
-
-        # if the server has waited through 5 timeouts, exit
+        
+        # ------------------ Handle invalid request ------------------
         else:
-          print("Server: I'm tired of waiting")
-          break
+          print("Server: Received invalid request:", msg)
 
     # close socket when finished
     self.server_socket.close()
@@ -134,12 +139,12 @@ class Server(Thread):
 
 # Runs process
 serv_proc = Server()  # init server thread
-client_thread = Thread(target=udp_client.client) # for testing
+# client_thread = Thread(target=udp_client.client) # for testing
 
 serv_proc.start()     # start server thread
-client_thread.start() # for testing
+# client_thread.start() # for testing
 
 serv_proc.join()      # wait for server thread to end
-client_thread.join()  # for testing
+# client_thread.join()  # for testing
 
 print("Finished transmission, closing...")
