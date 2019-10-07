@@ -6,7 +6,7 @@ import sys
 from time import sleep
 from threading import Thread
 
-import udp_client
+#import udp_client
 
 class Server(Thread):
   def __init__(self):
@@ -43,7 +43,7 @@ class Server(Thread):
       filename - file to send
     """
     pkt = b''                          # packet of byte string data
-
+    
     # open file to be sent
     print("Server: Sending image to client")
     with open(filename, 'rb') as img:
@@ -54,7 +54,7 @@ class Server(Thread):
         self.server_socket.sendto(pkt, self.client_addr)
         pkt = img.read(self.pkt_size)
         sleep(0.06)   # sleep for 60 ms
-
+   
   def recv_img(self, filename):
     """
     Receive an image packet by packet
@@ -69,7 +69,8 @@ class Server(Thread):
     # get image data from server until all data received
     while True:
       try:
-        print("Server: Ready to receive image")
+        if img_not_recvd:
+          print("Server: Ready to receive image")
         pkt = self.server_socket.recv(self.pkt_size)
         recv_data += pkt
         if img_not_recvd:
@@ -86,6 +87,7 @@ class Server(Thread):
             server_img.write(recv_data)
           print("Server: Received and saved image")
           break   # exit loop
+      
     
 
   def run(self):
@@ -100,6 +102,7 @@ class Server(Thread):
       try:
         print("Server: Ready")
         # get request and address from client
+        msg = ''    # set message to empty string
         (msg, self.client_addr) = self.server_socket.recvfrom(self.pkt_size)
         i = 0   # reset timeout index
         msg = msg.decode()
