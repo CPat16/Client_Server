@@ -6,7 +6,7 @@ class Packet():
     self.seq_num = seq_num
     self.data = data
     if(seq_num >= 0):
-      self.csum = self.checksum(self.data)
+      self.csum = self.checksum(self.seq_num, self.data)
     else:
       self.csum = -1
     self.fmt = '!H' + 'B'*len(self.data) + 'H'
@@ -24,40 +24,51 @@ class Packet():
     self.seq_num = int.from_bytes(packed[0:2], byteorder='big', signed=False)
     self.data = packed[2:(len(packed)-2)]
     self.csum = int.from_bytes(packed[(len(packed)-2):len(packed)], byteorder='big', signed=False)
-    #return struct.unpack(self.fmt, packed)
 
   def carry_around_add(self, a, b):
     c = a + b
+    # print(bin(c>>16))
     return (c & 0xffff) + (c >> 16)
 
-  def checksum(self, msg):
+  def checksum(self, seq, msg):
     csum = 0
     if isinstance(msg, str):
       msg = msg.encode()
     if isinstance(msg, (bytearray, bytes)):
       msg = int.from_bytes(msg, byteorder='big', signed=False)
+
+    # add sequence number first
+    csum = self.carry_around_add(csum, seq)
+
     #for _ in range(0, msg.bit_length()//16 + 1, 1):
     while msg != 0:
-      next_byte = msg & 0xffff
-      csum = self.carry_around_add(csum, next_byte)
-      # print(s, ':', bin(s))
+      next_bits = msg & 0xffff
+      csum = self.carry_around_add(csum, next_bits)
+      #print(csum, ':', bin(csum))
       msg = msg >> 16
       # print(bin(msg))
     return ~csum & 0xffff
 
 if __name__ == "__main__":
-  msg = b'\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01'
-  # msg = "ACK"
+  #msg = b'\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01\x00\x01'
+  msg = "checksum2"
   # int_msg = int.from_bytes(msg, byteorder='big', signed=False)
   # print(bin(int_msg))
 
-  pkt = Packet(1, msg)
+  pkt = Packet(0, msg)
 
-  print(pkt)
+  print(pkt.csum, ':', hex(pkt.csum))
+
+  """ print(pkt)
 
   packed = pkt.pkt_pack()
   print(packed)
 
+  new_pkt = Packet()
+  print("New pkt before:", new_pkt)
+
+  new_pkt.pkt_unpack(packed)
+  print("New pkt unpacked:", new_pkt) """
 
   #unpacked = pkt.pkt_unpack(packed)
   # unpacked = struct.unpack('!H', packed)
@@ -66,9 +77,5 @@ if __name__ == "__main__":
   print(packed[2:(len(packed)-2)])
   print(int.from_bytes(packed[(len(packed)-2):len(packed)], byteorder='big', signed=False)) """
 
-  new_pkt = Packet()
-  print("New pkt before:", new_pkt)
 
-  new_pkt.pkt_unpack(packed)
-  print("New pkt unpacked:", new_pkt)
   # print("Message:", new_pkt.data.decode())

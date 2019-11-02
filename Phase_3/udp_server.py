@@ -66,7 +66,7 @@ class Server(Thread):
         recv_data = self.server_socket.recv(self.pkt_size)
         recv_pkt.pkt_unpack(recv_data)
         # Received NAK or incorrect ACK
-        if recv_pkt.seq_num != seq_num or recv_pkt.csum != recv_pkt.checksum(recv_pkt.data):
+        if recv_pkt.seq_num != seq_num or recv_pkt.csum != recv_pkt.checksum(recv_pkt.seq_num, recv_pkt.data):
           print("Server: Received NAK or corrupted ACK, Resending...")
         # ACK is OK, move to next data and sequence
         else:
@@ -95,7 +95,7 @@ class Server(Thread):
         recv_data = self.server_socket.recv(self.pkt_size)
         
         pkt.pkt_unpack(recv_data)
-        if pkt.seq_num != exp_seq or pkt.csum != pkt.checksum(pkt.data):
+        if pkt.seq_num != exp_seq or pkt.csum != pkt.checksum(pkt.seq_num, pkt.data):
           ack = Packet(exp_seq^1, "ACK")
           print("Server: Sending ACK for incorrect packet")
         else:
@@ -103,7 +103,8 @@ class Server(Thread):
           ack = Packet(exp_seq, "ACK")
           exp_seq ^= 1
 
-        self.server_socket.sendto(ack, self.client_addr)
+        ack_pack = ack.pkt_pack()
+        self.server_socket.sendto(ack_pack, self.client_addr)
         
         if img_not_recvd:
           img_not_recvd = False       # img data began streaming if it reaches this point
@@ -136,13 +137,16 @@ class Server(Thread):
         msg_pkt = Packet()  # init empty packet
         (recv_data, self.client_addr) = self.server_socket.recvfrom(self.pkt_size)
         i = 0   # reset timeout index
+        print("got data")
         msg_pkt.pkt_unpack(recv_data)
-        if msg_pkt.csum != msg_pkt.checksum(msg_pkt.data):
-          pass
+        if msg_pkt.csum != msg_pkt.checksum(msg_pkt.seq_num, msg_pkt.data):
+          # send NAK
+          print("Server: ERR - csum")
+          nak_seq = msg_pkt.seq_num ^ 0x01
+          ack = Packet(nak_seq, "ACK")
+          ack_pack = ack.pkt_pack()
+          self.server_socket.sendto(ack_pack, self.client_addr)
         else:
-          ack = Packet(msg_pkt.seq_num, "ACK")
-          self.server_socket.sendto(ack, self.client_addr)
-
           msg = msg_pkt.data.decode()
           print("Server: Client request:", msg, flush=True)
 
@@ -159,22 +163,39 @@ class Server(Thread):
       if msg:
         # ------------------ Send image to client ------------------
         if msg == "download":
+          print("Server: Send ACK")
+          ack = Packet(msg_pkt.seq_num, "ACK")
+          ack_pack = ack.pkt_pack()
+          self.server_socket.sendto(ack_pack, self.client_addr)
+
           self.send_img(self.img_to_send)
 
         # ------------------ Get image from client ------------------
         elif msg == "upload":
+          print("Server: Send ACK")
+          ack = Packet(msg_pkt.seq_num, "ACK")
+          ack_pack = ack.pkt_pack()
+          self.server_socket.sendto(ack_pack, self.client_addr)
+
           self.recv_img(self.img_save_to)
 
         # ------------------ Exit server process ------------------
         elif msg == "exit":
+          print("Server: Send ACK")
+          ack = Packet(msg_pkt.seq_num, "ACK")
+          ack_pack = ack.pkt_pack()
+          self.server_socket.sendto(ack_pack, self.client_addr)
+
           print("Server: Exiting...")
           break
         
         # ------------------ Handle invalid request ------------------
         else:
+          # send NAK
           nak_seq = msg_pkt.seq_num ^ 0x01
           ack = Packet(nak_seq, "ACK")
-          self.server_socket.sendto(ack, self.client_addr)
+          ack_pack = ack.pkt_pack()
+          self.server_socket.sendto(ack_pack, self.client_addr)
 
           print("Server: Received invalid request:", msg)
 
