@@ -137,8 +137,14 @@ class Server(Thread):
         (recv_data, self.client_addr) = self.server_socket.recvfrom(self.pkt_size)
         i = 0   # reset timeout index
         msg_pkt.pkt_unpack(recv_data)
-        msg = msg_pkt.data.decode()
-        print("Server: Client request:", msg, flush=True)
+        if msg_pkt.csum != msg_pkt.checksum(msg_pkt.data):
+          pass
+        else:
+          ack = Packet(msg_pkt.seq_num, "ACK")
+          self.server_socket.sendto(ack, self.client_addr)
+
+          msg = msg_pkt.data.decode()
+          print("Server: Client request:", msg, flush=True)
 
       except socket.timeout:
         i = i + 1
@@ -166,6 +172,10 @@ class Server(Thread):
         
         # ------------------ Handle invalid request ------------------
         else:
+          nak_seq = msg_pkt.seq_num ^ 0x01
+          ack = Packet(nak_seq, "ACK")
+          self.server_socket.sendto(ack, self.client_addr)
+
           print("Server: Received invalid request:", msg)
 
     # close socket when finished
