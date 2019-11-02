@@ -6,7 +6,7 @@ class Packet():
     self.seq_num = seq_num
     self.data = data
     if(seq_num >= 0):
-      self.csum = self.checksum(msg)
+      self.csum = self.checksum(self.data)
     else:
       self.csum = -1
     self.fmt = '!H' + 'B'*len(self.data) + 'H'
