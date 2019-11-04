@@ -8,7 +8,7 @@ from time import time
 from threading import Thread
 
 from PacketHandler import Packet
-from udp_client import Client
+# from udp_client import Client
 
 class Server(Thread):
   def __init__(self):
