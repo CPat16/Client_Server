@@ -8,7 +8,6 @@ from time import time
 from threading import Thread
 
 from PacketHandler import Packet
-# import udp_client
 
 class Client(Thread):
   def __init__(self):
@@ -116,7 +115,7 @@ class Client(Thread):
         else:
           # write data into a file
           # end = time()
-          # print("Client: Time to receive image:", end - start - 10)
+          # print("Client: Time to receive image:", end - start - 2)
           with open(filename, 'wb+') as server_img:
             server_img.write(save_data)
           print("Client: Received and saved image", flush=True)
@@ -143,7 +142,6 @@ class Client(Thread):
 
     ack = Packet()
     ack_data = b''
-
     request = "upload"
     req_pkt = Packet(0, request)
     req_packed = req_pkt.pkt_pack()
@@ -159,7 +157,6 @@ class Client(Thread):
     
     ack = Packet()
     ack_data = b''
-
     request = "exit"
     req_pkt = Packet(0, request)
     req_packed = req_pkt.pkt_pack()

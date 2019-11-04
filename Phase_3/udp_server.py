@@ -29,7 +29,7 @@ class Server(Thread):
     # create UDP server socket
     self.server_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
 
-    self.server_socket.settimeout(2)       # Recieving sockets timeout after 10 seconds
+    self.server_socket.settimeout(2)       # Recieving sockets timeout after 2 seconds
 
     # bind to the socket
     try:
