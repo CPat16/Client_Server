@@ -4,6 +4,7 @@ import io
 import os
 import sys
 from time import sleep
+from time import time
 from threading import Thread
 
 from PacketHandler import Packet
@@ -28,7 +29,7 @@ class Client(Thread):
     # create UDP client socket
     self.client_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
 
-    self.client_socket.settimeout(10)       # Recieving sockets timeout after 10 seconds
+    self.client_socket.settimeout(2)       # Recieving sockets timeout after 10 seconds
 
 
   def send_img(self, filename):
@@ -90,12 +91,12 @@ class Client(Thread):
       try:
         if img_not_recvd:
           print("Client: Ready to receive image", flush=True)
+        # start = time()
         recv_data = self.client_socket.recv(self.pkt_size)
         
         pkt.pkt_unpack(recv_data)
         if pkt.seq_num != exp_seq or pkt.csum != pkt.checksum(pkt.seq_num, pkt.data):
           ack = Packet(exp_seq^1, "ACK")
-          print("Client: Sending ACK for incorrect packet")
         else:
           save_data += pkt.data
           ack = Packet(exp_seq, "ACK")
@@ -114,6 +115,8 @@ class Client(Thread):
         # image has been recieved
         else:
           # write data into a file
+          # end = time()
+          # print("Client: Time to receive image:", end - start - 10)
           with open(filename, 'wb+') as server_img:
             server_img.write(save_data)
           print("Client: Received and saved image", flush=True)
@@ -138,8 +141,6 @@ class Client(Thread):
 
     self.recv_img(self.img_save_to)
 
-    sleep(10)
-
     ack = Packet()
     ack_data = b''
 
@@ -154,7 +155,7 @@ class Client(Thread):
 
     self.send_img(self.img_to_send)
 
-    sleep(10)
+    sleep(2)
     
     ack = Packet()
     ack_data = b''

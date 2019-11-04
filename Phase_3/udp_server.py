@@ -4,6 +4,7 @@ import io
 import os
 import sys
 from time import sleep
+from time import time
 from threading import Thread
 
 from PacketHandler import Packet
@@ -28,7 +29,7 @@ class Server(Thread):
     # create UDP server socket
     self.server_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
 
-    self.server_socket.settimeout(10)       # Recieving sockets timeout after 10 seconds
+    self.server_socket.settimeout(2)       # Recieving sockets timeout after 10 seconds
 
     # bind to the socket
     try:
@@ -49,9 +50,14 @@ class Server(Thread):
     recv_pkt = Packet()   # init empty packet for received data
     read_data = b''       # byte string data read from file
     seq_num = 0           # init sequence number
+    snd_crpt_rate = 0     # packet corruption rate in percent
+    crpt_flag = 1         # corruption flag
+    snd_ackcrpt_rate = 0 # recived ACK corruption rate inpercent
+    ackcrpt_flag = 1      # corruption flag for ACK
     
     # open file to be sent
     print("Server: Sending image to client")
+    # start = time()
     with open(filename, 'rb') as img:
       read_data = img.read(self.data_size)
 
@@ -60,23 +66,41 @@ class Server(Thread):
         # pack and send
         send_pkt = Packet(seq_num=seq_num, data=read_data)
         packed = send_pkt.pkt_pack()
-        self.server_socket.sendto(packed, self.client_addr)
-        #print("Sent:", send_pkt)
+        
+        # Iteration to corrupt 2 bytes of the sent packet
+        if crpt_flag <= snd_crpt_rate:
+          crptpacked = b"".join([packed[0:1023], b"\x00"])
+          self.server_socket.sendto(crptpacked, self.client_addr)
+          crpt_flag = crpt_flag + 1
+        else:
+          crpt_flag = crpt_flag + 1
+          self.server_socket.sendto(packed, self.client_addr)
+        if crpt_flag > 100:
+          crpt_flag = 1
         
         # wait for ACK
         recv_data = self.server_socket.recv(self.pkt_size)
+        
+        # Iteration to corrupt 2 bytes of the recived ACK packet
+        if ackcrpt_flag <= snd_ackcrpt_rate:
+          recv_data = b"".join([recv_data[0:1023], b"\x00"])
+          ackcrpt_flag = ackcrpt_flag + 1
+        else:
+          ackcrpt_flag = ackcrpt_flag + 1
+        if ackcrpt_flag > 100:
+          ackcrpt_flag = 1
+        
         recv_pkt.pkt_unpack(recv_data)
-
-        #print("Received message:", recv_pkt)
 
         # Received NAK or incorrect ACK
         if recv_pkt.seq_num != seq_num or recv_pkt.csum != recv_pkt.checksum(recv_pkt.seq_num, recv_pkt.data):
-          print("Server: Received NAK or corrupted ACK, Resending...")
+          pass
         # ACK is OK, move to next data and sequence
         else:
-          #print("got ok packet")
           seq_num ^= 1
           read_data = img.read(self.data_size)
+    #end = time()
+    #print("Server: Time to send image:", end - start)
    
   def recv_img(self, filename):
     """
@@ -102,7 +126,6 @@ class Server(Thread):
         pkt.pkt_unpack(recv_data)
         if pkt.seq_num != exp_seq or pkt.csum != pkt.checksum(pkt.seq_num, pkt.data):
           ack = Packet(exp_seq^1, "ACK")
-          print("Server: Sending ACK for incorrect packet")
         else:
           save_data += pkt.data
           ack = Packet(exp_seq, "ACK")
@@ -146,10 +169,8 @@ class Server(Thread):
         msg_pkt.pkt_unpack(recv_data)
         #print("Received message:", msg_pkt)
 
-        #print("My csum:", msg_pkt.checksum(msg_pkt.seq_num, msg_pkt.data))
         if msg_pkt.csum != msg_pkt.checksum(msg_pkt.seq_num, msg_pkt.data):
           # send NAK
-          print("Server: ERR - csum")
           nak_seq = msg_pkt.seq_num ^ 0x01
           ack = Packet(nak_seq, "ACK")
           ack_pack = ack.pkt_pack()
@@ -162,7 +183,7 @@ class Server(Thread):
         i = i + 1
         if(i < 6):
           pass
-        # if the server has waited through 6 timeouts (60 seconds), exit
+        # if the server has waited through 6 timeouts (12 seconds), exit
         else:
           print("Server: I'm tired of waiting", flush=True)
           break
