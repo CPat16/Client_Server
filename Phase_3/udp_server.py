@@ -7,7 +7,7 @@ from time import sleep
 from threading import Thread
 
 from PacketHandler import Packet
-# import udp_client
+from udp_client import Client
 
 class Server(Thread):
   def __init__(self):
@@ -61,15 +61,20 @@ class Server(Thread):
         send_pkt = Packet(seq_num=seq_num, data=read_data)
         packed = send_pkt.pkt_pack()
         self.server_socket.sendto(packed, self.client_addr)
+        #print("Sent:", send_pkt)
         
         # wait for ACK
         recv_data = self.server_socket.recv(self.pkt_size)
         recv_pkt.pkt_unpack(recv_data)
+
+        #print("Received message:", recv_pkt)
+
         # Received NAK or incorrect ACK
         if recv_pkt.seq_num != seq_num or recv_pkt.csum != recv_pkt.checksum(recv_pkt.seq_num, recv_pkt.data):
           print("Server: Received NAK or corrupted ACK, Resending...")
         # ACK is OK, move to next data and sequence
         else:
+          #print("got ok packet")
           seq_num ^= 1
           read_data = img.read(self.data_size)
    
@@ -137,8 +142,11 @@ class Server(Thread):
         msg_pkt = Packet()  # init empty packet
         (recv_data, self.client_addr) = self.server_socket.recvfrom(self.pkt_size)
         i = 0   # reset timeout index
-        print("got data")
+        #print("got data")
         msg_pkt.pkt_unpack(recv_data)
+        #print("Received message:", msg_pkt)
+
+        #print("My csum:", msg_pkt.checksum(msg_pkt.seq_num, msg_pkt.data))
         if msg_pkt.csum != msg_pkt.checksum(msg_pkt.seq_num, msg_pkt.data):
           # send NAK
           print("Server: ERR - csum")
@@ -165,9 +173,12 @@ class Server(Thread):
         if msg == "download":
           print("Server: Send ACK")
           ack = Packet(msg_pkt.seq_num, "ACK")
+          #print("ACK:", ack)
           ack_pack = ack.pkt_pack()
+          #print(int.from_bytes(ack_pack[(len(ack_pack)-2):len(ack_pack)], byteorder='big', signed=False))
           self.server_socket.sendto(ack_pack, self.client_addr)
 
+          #break
           self.send_img(self.img_to_send)
 
         # ------------------ Get image from client ------------------
@@ -206,12 +217,12 @@ class Server(Thread):
 if __name__ == "__main__":
   # Runs process
   serv_proc = Server()  # init server thread
-  #client_thread = Thread(target=udp_client.client) # for testing
+  client_thread = Client()  # init server thread
 
   serv_proc.start()     # start server thread
-  #client_thread.start() # for testing
+  client_thread.start() # for testing
 
   serv_proc.join()      # wait for server thread to end
-  #client_thread.join()  # for testing
+  client_thread.join()  # for testing
 
   print("Finished transmission, closing...")
