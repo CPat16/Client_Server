@@ -32,8 +32,8 @@ class Client(Thread):
         # create UDP client socket
         self.client_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
 
-        # Recieving sockets timeout after 10 seconds
-        self.client_socket.settimeout(2)
+        # Recieving sockets timeout after 2 seconds
+        self.client_socket.settimeout(5)
 
     def send_img(self, filename):
         """

@@ -9,11 +9,11 @@ from threading import Thread
 from random import randint, seed
 
 from PacketHandler import Packet
-# from udp_client import Client
+from udp_timer import Timer
 
 
 class Server(Thread):
-    def __init__(self, crpt_data, crpt_ack):
+    def __init__(self, crpt_data, crpt_ack, data_loss, ack_loss):
         """
         Initializes Server Process
         """
@@ -32,11 +32,15 @@ class Server(Thread):
 
         self.crpt_data_rate = crpt_data         # packet corruption rate in percent
         self.crpt_ack_rate = crpt_ack           # recived ACK corruption rate inpercent
+        self.pkt_loss_rate = data_loss          # loss of data packet rate
+        self.ack_loss_rate = ack_loss           # loss of ack packet rate
+        self.err_flag = 0
 
         seed(42)
 
         # create UDP server socket
-        self.server_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
+        self.server_socket = socket.socket(family=socket.AF_INET,
+                                           type=socket.SOCK_DGRAM)
 
         # Recieving sockets timeout after 2 seconds
         self.server_socket.settimeout(2)
@@ -49,6 +53,9 @@ class Server(Thread):
         except:
             print("Server failed bind to port", server_port)
 
+    def gen_err_flag(self):
+        self.err_flag = randint(1, 100)
+
     def send_img(self, filename):
         """
         Sends the image packet by packet
@@ -56,15 +63,18 @@ class Server(Thread):
         Parameters:
           filename - file to send
         """
-        recv_data = b''       # bytes for data received
-        recv_pkt = Packet()   # init empty packet for received data
-        read_data = b''       # byte string data read from file
-        seq_num = 0           # init sequence number
-        crpt_flag = 0         # corruption flag
+        recv_data = b''         # bytes for data received
+        recv_pkt = Packet()     # init empty packet for received data
+        read_data = b''         # byte string data read from file
+        seq_num = 0             # init sequence number
+        my_timer = Timer()      # Timer thread
+        my_timer.set_time(0.05)    # set timer to 50 ms
+        my_timer.stop()         # so timer doesn't start counting
+        my_timer.start()        # start timer thread
 
         # open file to be sent
         print("Server: Sending image to client")
-        # start = time()
+        start = time()
         with open(filename, 'rb') as img:
             read_data = img.read(self.data_size)
             # pack
@@ -74,37 +84,54 @@ class Server(Thread):
             # send data until end of file reached
             while read_data:
 
-                if self.crpt_data_rate > 0 or self.crpt_ack_rate > 0:
-                    crpt_flag = randint(1, 100)
+                if (self.crpt_data_rate > 0 or self.crpt_ack_rate > 0 or
+                        self.pkt_loss_rate > 0 or self.ack_loss_rate > 0):
+                    self.gen_err_flag()
 
-                # corrupt 2 bytes of the sent packet
-                if self.crpt_data_rate > 0 and crpt_flag <= self.crpt_data_rate:
+                # corrupt 1 byte of the sent packet
+                if self.crpt_data_rate > 0 and self.err_flag <= self.crpt_data_rate:
                     crptpacked = b"".join([packed[0:1023], b"\x00"])
                     self.server_socket.sendto(crptpacked, self.client_addr)
+                elif self.pkt_loss_rate > 0 and self.err_flag <= self.pkt_loss_rate:
+                    pass    # dont send anything
                 else:
                     self.server_socket.sendto(packed, self.client_addr)
 
-                # wait for ACK
-                recv_data = self.server_socket.recv(self.pkt_size)
-
-                # corrupt 2 bytes of the recived ACK packet
-                if self.crpt_ack_rate > 0 and crpt_flag <= self.crpt_ack_rate:
-                    recv_data = b"".join([recv_data[0:1023], b"\x00"])
-
-                recv_pkt.pkt_unpack(recv_data)
-
-                # Received NAK or incorrect ACK
-                if recv_pkt.seq_num != seq_num or recv_pkt.csum != recv_pkt.checksum(recv_pkt.seq_num, recv_pkt.data):
-                    pass
-                # ACK is OK, move to next data and sequence
+                my_timer.restart()
+                if self.pkt_loss_rate > 0 and self.err_flag <= self.pkt_loss_rate:
+                    while not my_timer.get_exception():
+                        sleep(0.0001)
                 else:
-                    seq_num ^= 1
-                    read_data = img.read(self.data_size)
-                    # pack
-                    send_pkt = Packet(seq_num=seq_num, data=read_data)
-                    packed = send_pkt.pkt_pack()
-        #end = time()
-        #print("Server: Time to send image:", end - start)
+                    # wait for ACK
+                    recv_data = self.server_socket.recv(self.pkt_size)
+
+                if self.ack_loss_rate > 0 and self.err_flag <= self.ack_loss_rate:
+                    while not my_timer.get_exception():
+                        sleep(0.0001)
+                else:
+                    my_timer.stop()
+
+                    # corrupt 1 byte of the recived ACK packet
+                    if self.crpt_ack_rate > 0 and self.err_flag <= self.crpt_ack_rate:
+                        recv_data = b"".join([recv_data[0:1023], b"\x00"])
+
+                    recv_pkt.pkt_unpack(recv_data)
+
+                    # Received NAK or incorrect ACK
+                    if recv_pkt.seq_num != seq_num or recv_pkt.csum != recv_pkt.checksum(recv_pkt.seq_num, recv_pkt.data):
+                        pass
+                    # ACK is OK, move to next data and sequence
+                    else:
+                        seq_num ^= 1
+                        read_data = img.read(self.data_size)
+                        # pack
+                        send_pkt = Packet(seq_num=seq_num, data=read_data)
+                        packed = send_pkt.pkt_pack()
+
+        my_timer.kill()
+        my_timer.join()
+        end = time()
+        print("Server: Time to send image:", end - start)
 
     def recv_img(self, filename):
         """
@@ -119,12 +146,14 @@ class Server(Thread):
         img_not_recvd = True      # flag to indicate if image has been recieved
         exp_seq = 0               # expected sequence number initially 0
         pkt = Packet()
+        self.err_flag = 0
 
         # get image data from server until all data received
         while True:
             try:
                 if img_not_recvd:
                     print("Server: Ready to receive image", flush=True)
+
                 recv_data = self.server_socket.recv(self.pkt_size)
 
                 pkt.pkt_unpack(recv_data)
@@ -238,4 +267,3 @@ class Server(Thread):
 
         # close socket when finished
         self.server_socket.close()
-
