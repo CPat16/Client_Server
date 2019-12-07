@@ -9,7 +9,7 @@ from threading import Thread
 from random import randint, seed
 
 from PacketHandler import Packet
-from udp_timer import Timer
+from tcp_timer import Timer
 
 
 class Server(Thread):
