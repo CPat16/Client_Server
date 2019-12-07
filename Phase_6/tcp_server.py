@@ -110,10 +110,13 @@ class Server(Thread):
         window = []             # init window as empty list
         win_idx = 0             # index to item in window
         last_sent = None
+        dupl_cnt = 0       # count of duplicate acks
         my_timer = Timer()      # Timer thread
         my_timer.set_time(0.1)    # set timer to 100 ms
         my_timer.stop()         # so timer doesn't start counting
         my_timer.start()        # start timer thread
+
+        sample_rtt = 0          # init sample rtt
 
         self.server_socket.settimeout(0)    # don't block when waiting for ACKs
 
@@ -123,13 +126,18 @@ class Server(Thread):
         with open(filename, 'rb') as img:
             read_data = img.read(self.data_size)
             # pack
-            send_pkt = Packet(seq_num=seq_num, data=read_data)
-            packed = send_pkt.pkt_pack()
+            send_pkt = Packet(src=self.server_port,
+                              dst=self.client_port,
+                              seq_num=seq_num,
+                              ack_num=0,
+                              data=read_data,
+                              ctrl_bits=0x00)
+            next_pkt = send_pkt.pkt_pack()
 
             # add first packet to window list
-            window.append(packed)
+            window.append(next_pkt)
 
-            # send data until end of file reached
+            # send data until all data acked
             while read_data or len(window) > 0:
                 if (self.crpt_data_rate > 0 or self.crpt_ack_rate > 0 or
                         self.pkt_loss_rate > 0 or self.ack_loss_rate > 0):
@@ -138,22 +146,39 @@ class Server(Thread):
                 if my_timer.get_exception():
                     self.resend_window(window)
                     my_timer.restart()
-                win_idx = len(window) - 1
-                if seq_num < (base + self.N) and window[win_idx] != last_sent:
-                    # corrupt 1 byte of the sent packet
+
+                # Move to next data 
+                if len(window) < self.N and read_data:
+                    read_data = img.read(self.data_size)
+                    # pack
+                    if read_data:
+                        send_pkt = Packet(src=self.server_port,
+                                          dst=self.client_port,
+                                          seq_num=seq_num,
+                                          ack_num=0,
+                                          data=read_data,
+                                          ctrl_bits=0x00)
+                        next_pkt = send_pkt.pkt_pack()
+                        window.append(next_pkt)   # add packet to window
+                    else:   # no more data to be sent
+                        next_pkt = None
+
+                if next_pkt:
                     if self.crpt_data_rate > 0 and self.err_flag <= self.crpt_data_rate:
-                        crptpacked = b"".join([window[win_idx][0:1023], b"\x00"])
+                        # corrupt 1 byte of the sent packet
+                        crptpacked = b"".join([next_pkt[0:1023], b"\x00"])
                         self.server_socket.sendto(crptpacked, self.client_addr)
                     elif self.pkt_loss_rate > 0 and self.err_flag <= self.pkt_loss_rate:
                         pass    # dont send anything
                     else:
-                        self.server_socket.sendto(window[win_idx], self.client_addr)
-                    last_sent = window[win_idx]
+                        # send normally
+                        self.server_socket.sendto(next_pkt, self.client_addr)
+
                     if base == seq_num:
                         my_timer.restart()  # start timer
-                    seq_num += 1
+                    seq_num += len(send_pkt.data)
 
-                # wait for ACK
+                # receive ACK
                 if recv_data:
                     recv_data = b''     # empty data buffer
                 try:
@@ -166,7 +191,6 @@ class Server(Thread):
                     if self.ack_loss_rate > 0 and self.err_flag <= self.ack_loss_rate:
                         pass     # pretend we never got ACK
                     else:
-
                         # corrupt 1 byte of the recived ACK packet
                         if self.crpt_ack_rate > 0 and self.err_flag <= self.crpt_ack_rate:
                             recv_data = b"".join([recv_data[0:1023], b"\x00"])
@@ -174,28 +198,33 @@ class Server(Thread):
                         recv_pkt.pkt_unpack(recv_data)
 
                         # Received NAK
-                        if recv_pkt.csum != recv_pkt.checksum(recv_pkt.seq_num, recv_pkt.data):
+                        if recv_pkt.csum != recv_pkt.checksum():
                             pass
                         # ACK is OK
                         else:
-                            base = recv_pkt.seq_num + 1     # increment base
-                            window.pop(0)                   # remove acked packet from window
-                            if base == seq_num:
-                                my_timer.stop()
-                            else:
+                            if recv_pkt.seq_num > base:
+                                base = recv_pkt.seq_num         # increment base
+                                window.pop(0)                   # remove acked packet from window
+                                if len(window) == 0:            # no unacked packets
+                                    my_timer.stop()
+                                else:                           # unacked packets remaining
+                                    my_timer.restart()
+                                self.N += 1
+                            elif recv_pkt.seq_num == base:
+                                dupl_cnt += 1
+                            # received 3 duplicate ACKs
+                            if dupl_cnt >= 3:
+                                self.resend_window(window)
                                 my_timer.restart()
-                # Move to next data 
-                if len(window) < self.N and read_data:
-                    read_data = img.read(self.data_size)
-                    # pack
-                    send_pkt = Packet(seq_num=seq_num, data=read_data)
-                    packed = send_pkt.pkt_pack()
-                    window.append(packed)   # add packet to window
+
                 sleep(0.0001)
 
         end = time()
         my_timer.kill()
         my_timer.join()
+        self.N = 1                          #reset window size
+        self.est_rtt = 0.1                  # reset estimated rtt
+        self.dev_rtt = 0                    # reset deviation
         self.server_socket.settimeout(5)    # reset timeout value
         print("Server: Time to send image:", end - start)
 
@@ -263,38 +292,29 @@ class Server(Thread):
                 msg = b''           # set message to empty string
                 recv_data = b''     # set received data to empty string
                 msg_pkt = Packet()  # init empty packet
-                (recv_data, self.client_addr) = self.server_socket.recvfrom(
-                    self.pkt_size)
+                (recv_data, self.client_addr) = self.server_socket.recvfrom(self.pkt_size)
                 i = 0   # reset timeout index
                 msg_pkt.pkt_unpack(recv_data)
 
-                if msg_pkt.csum != msg_pkt.checksum(msg_pkt.seq_num, msg_pkt.data):
-                    # send NAK
-                    nak_seq = msg_pkt.seq_num ^ 0x01
-                    ack = Packet(nak_seq, "ACK")
-                    ack_pack = ack.pkt_pack()
-                    self.server_socket.sendto(ack_pack, self.client_addr)
-                else:
-                    msg = msg_pkt.data.decode()
-                    print("Server: Client request:", msg, flush=True)
+                msg = msg_pkt.data.decode()
+                print("Server: Client request:", msg, flush=True)
 
             except socket.timeout:
                 i = i + 1
                 if(i < 6):
                     pass
-                # if the server has waited through 6 timeouts (12 seconds), exit
+                # if the server has waited through 6 timeouts (30 seconds), exit
                 else:
                     print("Server: I'm tired of waiting", flush=True)
                     break
-
-            # if any message recieved, then service it
-            if msg:
+            if self.conn_est:
+                # if any message recieved, then service it
                 # ------------------ Send image to client ------------------
                 if msg == "download":
-                    ack = Packet(msg_pkt.seq_num, "ACK")
-                    #print("ACK:", ack)
+                    ack = Packet(self.server_port, self.client_port,
+                                0, msg_pkt.ack_num + 1,
+                                0, 0x10)
                     ack_pack = ack.pkt_pack()
-                    #print(int.from_bytes(ack_pack[(len(ack_pack)-2):len(ack_pack)], byteorder='big', signed=False))
                     self.server_socket.sendto(ack_pack, self.client_addr)
 
                     # break
@@ -302,7 +322,9 @@ class Server(Thread):
 
                 # ------------------ Get image from client ------------------
                 elif msg == "upload":
-                    ack = Packet(msg_pkt.seq_num, "ACK")
+                    ack = Packet(self.server_port, self.client_port,
+                                0, msg_pkt.ack_num + 1,
+                                0, 0x10)
                     ack_pack = ack.pkt_pack()
                     self.server_socket.sendto(ack_pack, self.client_addr)
 
@@ -310,7 +332,9 @@ class Server(Thread):
 
                 # ------------------ Exit server process ------------------
                 elif msg == "exit":
-                    ack = Packet(self.server_port, self.client_port, 0, msg_pkt.ack_num + 1, 0, 0x10)
+                    ack = Packet(self.server_port, self.client_port,
+                                0, msg_pkt.ack_num + 1,
+                                0, 0x10)
                     ack_pack = ack.pkt_pack()
                     self.server_socket.sendto(ack_pack, self.client_addr)
                     # send FIN packet
@@ -331,13 +355,26 @@ class Server(Thread):
                 # ------------------ Handle invalid request ------------------
                 else:
                     # send NAK
-                    nak_seq = msg_pkt.seq_num ^ 0x01
-                    ack = Packet(nak_seq, "ACK")
+                    ack = Packet(self.server_port, self.client_port,
+                                0, 0,
+                                0, 0x10)
                     ack_pack = ack.pkt_pack()
                     self.server_socket.sendto(ack_pack, self.client_addr)
 
                     print("Server: Received invalid request:", msg)
-                    break
+                    # break
+            elif msg_pkt.get_syn_bit and not self.conn_est:
+                print("Server: Establishing Connection...")
+                self.est_connection(msg_pkt)
+            else:
+                print("Server: Connection not established yet")
+                # send NAK
+                ack = Packet(self.server_port, self.client_port,
+                             0, 0,
+                             0, 0x10)
+                ack_pack = ack.pkt_pack()
+                self.server_socket.sendto(ack_pack, self.client_addr)
+
 
         # close socket when finished
         self.server_socket.close()
