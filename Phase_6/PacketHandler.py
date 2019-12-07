@@ -16,8 +16,8 @@ TCP packet implementation:
                         .
 |                       data                        |
 total size = 1024
-head len = 144
-NOTE: Urget Data pointer and options not needed for implementation
+head len = 18
+NOTE: Urgent Data pointer and options not needed for implementation
 """
 
 class Packet():
@@ -32,7 +32,7 @@ class Packet():
         self.dst = dst
         self.seq_num = seq_num
         self.ack_num = ack_num
-        self.head_len = 144         # header length
+        self.head_len = 18          # header length in bytes
         self.ctrl_bits = ctrl_bits  # control bits
         self.rwin = 4096            # receive window
         self.data = data

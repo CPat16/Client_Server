@@ -19,18 +19,21 @@ class Server(Thread):
         """
         Thread.__init__(self)                   # initializes as thread
         host_ip = '127.0.0.1'
-        server_port = 20001
-        server_addr = (host_ip, server_port)    # address of server (IP, Port)
+        self.server_port = 20001
+        server_addr = (host_ip, self.server_port)   # address of server (IP, Port)
+        self.conn_est = False                       # no connection established initially
 
         self.pkt_size = 1024                                # packet size
-        self.header_size = 4                                # bytes of header data
+        self.header_size = 18                               # bytes of header data
         self.data_size = self.pkt_size - self.header_size   # Size of data in packet
         # relative path of image to send
         self.img_to_send = 'hello.jpg'
         # filename to save received image
         self.img_save_to = 'server_img.jpg'
 
-        self.N = 10      # set N to 10 for go-back-N frame size
+        self.N = 1          # set N to 1 for initial window size
+        self.est_rtt = 0.1  # initial estimated rtt (100ms)
+        self.dev_rtt = 0    # inital deviation in rtt for timeout
 
         self.crpt_data_rate = crpt_data         # packet corruption rate in percent
         self.crpt_ack_rate = crpt_ack           # recived ACK corruption rate inpercent
@@ -50,10 +53,10 @@ class Server(Thread):
         # bind to the socket
         try:
             self.server_socket.bind(server_addr)
-            print("Server bound to port", server_port)
+            print("Server bound to port", self.server_port)
 
         except:
-            print("Server failed bind to port", server_port)
+            print("Server failed bind to port", self.server_port)
 
     def gen_err_flag(self):
         self.err_flag = randint(1, 100)
@@ -61,6 +64,36 @@ class Server(Thread):
     def resend_window(self, window):
         for pkt in window:
             self.server_socket.sendto(pkt, self.client_addr)
+
+    def est_timeout(self, sample_rtt):
+        a = 0.125
+        B = 0.25
+        self.est_rtt = ((1-a)*self.est_rtt) + (a*sample_rtt)
+        self.dev_rtt = ((1-B)*self.dev_rtt) + (B*abs(sample_rtt - self.est_rtt))
+
+        return self.est_rtt + (4*self.dev_rtt)
+
+    def est_connection(self, syn_pkt: Packet):
+        self.client_port = syn_pkt.src
+        print("Client port:", self.client_port)
+        my_syn = Packet(self.server_port, self.client_port,
+                        1, syn_pkt.ack_num + 1,
+                        0, 0x12)    # ack bit = 1, syn bit = 1
+        packed = my_syn.pkt_pack()
+        self.server_socket.sendto(packed, self.client_addr)
+
+        try:
+            syn_ack = Packet()
+            recv_data = self.server_socket.recv(self.pkt_size)
+            syn_ack.pkt_unpack(recv_data)
+
+            if syn_ack.get_ack_bit() and syn_ack.ack_num == 2:
+                self.conn_est = True
+                print("Server: Connection established")
+            else:
+                print("Connection failed: bad SYNACK")
+        except socket.timeout:
+            print("Connection failed: timeout")
 
     def send_img(self, filename):
         """
@@ -233,9 +266,7 @@ class Server(Thread):
                 (recv_data, self.client_addr) = self.server_socket.recvfrom(
                     self.pkt_size)
                 i = 0   # reset timeout index
-                #print("got data")
                 msg_pkt.pkt_unpack(recv_data)
-                #print("Received message:", msg_pkt)
 
                 if msg_pkt.csum != msg_pkt.checksum(msg_pkt.seq_num, msg_pkt.data):
                     # send NAK
@@ -260,7 +291,6 @@ class Server(Thread):
             if msg:
                 # ------------------ Send image to client ------------------
                 if msg == "download":
-                    print("Server: Send ACK")
                     ack = Packet(msg_pkt.seq_num, "ACK")
                     #print("ACK:", ack)
                     ack_pack = ack.pkt_pack()
@@ -272,7 +302,6 @@ class Server(Thread):
 
                 # ------------------ Get image from client ------------------
                 elif msg == "upload":
-                    print("Server: Send ACK")
                     ack = Packet(msg_pkt.seq_num, "ACK")
                     ack_pack = ack.pkt_pack()
                     self.server_socket.sendto(ack_pack, self.client_addr)
@@ -281,13 +310,23 @@ class Server(Thread):
 
                 # ------------------ Exit server process ------------------
                 elif msg == "exit":
-                    print("Server: Send ACK")
-                    ack = Packet(msg_pkt.seq_num, "ACK")
+                    ack = Packet(self.server_port, self.client_port, 0, msg_pkt.ack_num + 1, 0, 0x10)
                     ack_pack = ack.pkt_pack()
                     self.server_socket.sendto(ack_pack, self.client_addr)
+                    # send FIN packet
+                    fin = Packet(self.server_port, self.client_port, 0, 0, 0, 0x01)
+                    fin_pack = fin.pkt_pack()
+                    self.server_socket.sendto(fin_pack, self.client_addr)
 
-                    print("Server: Exiting...")
-                    break
+                    fin_ack = Packet()
+                    recv_data = self.server_socket.recv(self.pkt_size)
+                    fin_ack.pkt_unpack(recv_data)
+
+                    if fin_ack.get_ack_bit:
+                        print("Server: Exiting...")
+                        break
+                    else:
+                        print("Server: Connection teardown failed")
 
                 # ------------------ Handle invalid request ------------------
                 else:
