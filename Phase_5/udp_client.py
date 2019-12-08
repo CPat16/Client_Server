@@ -8,6 +8,7 @@ from time import time
 from threading import Thread
 
 from PacketHandler import Packet
+from udp_timer import Timer
 
 
 class Client(Thread):
@@ -29,11 +30,17 @@ class Client(Thread):
         # filename to save received image
         self.img_save_to = 'client_img.jpg'
 
+        self.N = 10      # set N to 10 for go-back-N frame size
+
         # create UDP client socket
         self.client_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
 
         # Recieving sockets timeout after 5 seconds
         self.client_socket.settimeout(5)
+
+    def resend_window(self, window):
+        for pkt in window:
+            self.client_socket.sendto(pkt, self.server_addr)
 
     def send_img(self, filename):
         """
@@ -42,41 +49,83 @@ class Client(Thread):
         Parameters:
           filename - file to send
         """
-        recv_data = b''       # bytes for data received
-        recv_pkt = Packet()   # init empty packet for received data
-        read_data = b''       # byte string data read from file
-        seq_num = 0           # init sequence number
+        recv_data = b''         # bytes for data received
+        recv_pkt = Packet()     # init empty packet for received data
+        read_data = b''         # byte string data read from file
+        seq_num = 0             # init sequence number
+        base = 0                # init base packet number
+        window = []             # init window as empty list
+        win_idx = 0             # index to item in window
+        last_sent = None
+        my_timer = Timer()      # Timer thread
+        my_timer.set_time(0.1)    # set timer to 100 ms
+        my_timer.stop()         # so timer doesn't start counting
+        my_timer.start()        # start timer thread
+
+        self.client_socket.settimeout(0)    # don't block when waiting for ACKs
 
         # open file to be sent
-        print("Client: Sending image to Server")
+        print("Client: Sending image to server")
+        # start = time()
         with open(filename, 'rb') as img:
             read_data = img.read(self.data_size)
             # pack
             send_pkt = Packet(seq_num=seq_num, data=read_data)
             packed = send_pkt.pkt_pack()
 
+            # add first packet to window list
+            window.append(packed)
+
             # send data until end of file reached
-            while read_data:
-                self.client_socket.sendto(packed, self.server_addr)
-                #print("Client: Sent:", send_pkt)
+            while read_data or len(window) > 0:
+                if my_timer.get_exception():
+                    self.resend_window(window)
+                    my_timer.restart()
+
+                win_idx = len(window) - 1
+                if seq_num < (base + self.N) and window[win_idx] != last_sent:
+                    self.client_socket.sendto(window[win_idx], self.server_addr)
+                    last_sent = window[win_idx]
+                    if base == seq_num:
+                        my_timer.restart()  # start timer
+                    seq_num += 1
 
                 # wait for ACK
-                recv_data = self.client_socket.recv(self.pkt_size)
-                recv_pkt.pkt_unpack(recv_data)
+                if recv_data:
+                    recv_data = b''     # empty data buffer
+                try:
+                    recv_data = self.client_socket.recv(self.pkt_size)
+                except socket.error as e:
+                    if e == 10035:
+                        pass
 
-                #print("Client: Received message:", recv_pkt)
+                if recv_data:
+                    recv_pkt.pkt_unpack(recv_data)
 
-                # Received NAK or incorrect ACK
-                if recv_pkt.seq_num != seq_num or recv_pkt.csum != recv_pkt.checksum(recv_pkt.seq_num, recv_pkt.data):
-                    pass
-                # ACK is OK, move to next data and sequence
-                else:
-                    #print("Client: got ok packet")
-                    seq_num ^= 1
+                    # Received NAK
+                    if recv_pkt.csum != recv_pkt.checksum(recv_pkt.seq_num, recv_pkt.data):
+                        pass
+                    # ACK is OK
+                    else:
+                        base = recv_pkt.seq_num + 1     # increment base
+                        window.pop(0)                   # remove acked packet from window
+                        if base == seq_num:
+                            my_timer.stop()
+                        else:
+                            my_timer.restart()
+                # Move to next data 
+                if len(window) < self.N and read_data:
                     read_data = img.read(self.data_size)
                     # pack
                     send_pkt = Packet(seq_num=seq_num, data=read_data)
                     packed = send_pkt.pkt_pack()
+                    window.append(packed)   # add packet to window
+                sleep(0.0001)
+
+        # end = time()
+        my_timer.kill()
+        my_timer.join()
+        self.client_socket.settimeout(5)    # reset timeout value
 
     def recv_img(self, filename):
         """
@@ -148,7 +197,7 @@ class Client(Thread):
 
         self.recv_img(self.img_save_to)
 
-        """ ack = Packet()
+        ack = Packet()
         ack_data = b''
         request = "upload"
         req_pkt = Packet(0, request)
@@ -161,7 +210,7 @@ class Client(Thread):
 
         self.send_img(self.img_to_send)
 
-        sleep(5) """
+        sleep(5)
 
         ack = Packet()
         ack_data = b''
