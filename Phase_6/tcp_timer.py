@@ -41,5 +41,3 @@ class Timer(Thread):
                 pass    # timer stopped, do nothing
 
             sleep(0.0001)   # needed to allow other threads to run
-
-        print("Timer killed")

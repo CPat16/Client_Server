@@ -7,6 +7,7 @@ from time import sleep
 from time import time
 from threading import Thread
 from random import randint, seed
+from math import ceil
 
 from PacketHandler import Packet
 from tcp_timer import Timer
@@ -62,8 +63,8 @@ class Server(Thread):
         self.err_flag = randint(1, 100)
 
     def resend_window(self, window):
-        for pkt in window:
-            self.server_socket.sendto(pkt, self.client_addr)
+        for pkt in range(self.N):
+            self.server_socket.sendto(window[pkt], self.client_addr)
 
     def est_timeout(self, sample_rtt):
         a = 0.125
@@ -75,10 +76,9 @@ class Server(Thread):
 
     def est_connection(self, syn_pkt: Packet):
         self.client_port = syn_pkt.src
-        print("Client port:", self.client_port)
         my_syn = Packet(self.server_port, self.client_port,
-                        1, syn_pkt.ack_num + 1,
-                        0, 0x12)    # ack bit = 1, syn bit = 1
+                        0, syn_pkt.ack_num + 1,
+                        b'', 0x12)    # ack bit = 1, syn bit = 1
         packed = my_syn.pkt_pack()
         self.server_socket.sendto(packed, self.client_addr)
 
@@ -87,13 +87,13 @@ class Server(Thread):
             recv_data = self.server_socket.recv(self.pkt_size)
             syn_ack.pkt_unpack(recv_data)
 
-            if syn_ack.get_ack_bit() and syn_ack.ack_num == 2:
+            if syn_ack.get_ack_bit() and syn_ack.ack_num == 1:
                 self.conn_est = True
                 print("Server: Connection established")
             else:
-                print("Connection failed: bad SYNACK")
+                print("Server: Connection failed: bad SYNACK")
         except socket.timeout:
-            print("Connection failed: timeout")
+            print("Server: Connection failed: timeout")
 
     def send_img(self, filename):
         """
@@ -108,15 +108,13 @@ class Server(Thread):
         seq_num = 0             # init sequence number
         base = 0                # init base packet number
         window = []             # init window as empty list
-        win_idx = 0             # index to item in window
-        last_sent = None
         dupl_cnt = 0       # count of duplicate acks
         my_timer = Timer()      # Timer thread
         my_timer.set_time(0.1)    # set timer to 100 ms
         my_timer.stop()         # so timer doesn't start counting
         my_timer.start()        # start timer thread
 
-        sample_rtt = 0          # init sample rtt
+        # sample_rtt = 0          # init sample rtt
 
         self.server_socket.settimeout(0)    # don't block when waiting for ACKs
 
@@ -144,6 +142,7 @@ class Server(Thread):
                     self.gen_err_flag()
 
                 if my_timer.get_exception():
+                    self.N = ceil(self.N / 2)
                     self.resend_window(window)
                     my_timer.restart()
 
@@ -173,7 +172,7 @@ class Server(Thread):
                     else:
                         # send normally
                         self.server_socket.sendto(next_pkt, self.client_addr)
-
+                    next_pkt = None
                     if base == seq_num:
                         my_timer.restart()  # start timer
                     seq_num += len(send_pkt.data)
@@ -202,18 +201,21 @@ class Server(Thread):
                             pass
                         # ACK is OK
                         else:
-                            if recv_pkt.seq_num > base:
-                                base = recv_pkt.seq_num         # increment base
+                            if recv_pkt.ack_num > base:
+                                dupl_cnt = 0                    # reset duplicate count
+                                base = recv_pkt.ack_num         # increment base
                                 window.pop(0)                   # remove acked packet from window
                                 if len(window) == 0:            # no unacked packets
                                     my_timer.stop()
                                 else:                           # unacked packets remaining
                                     my_timer.restart()
                                 self.N += 1
-                            elif recv_pkt.seq_num == base:
+                            elif recv_pkt.ack_num == base:
                                 dupl_cnt += 1
                             # received 3 duplicate ACKs
                             if dupl_cnt >= 3:
+                                dupl_cnt = 0
+                                self.N = ceil(self.N / 2)
                                 self.resend_window(window)
                                 my_timer.restart()
 
@@ -223,8 +225,8 @@ class Server(Thread):
         my_timer.kill()
         my_timer.join()
         self.N = 1                          #reset window size
-        self.est_rtt = 0.1                  # reset estimated rtt
-        self.dev_rtt = 0                    # reset deviation
+        # self.est_rtt = 0.1                  # reset estimated rtt
+        # self.dev_rtt = 0                    # reset deviation
         self.server_socket.settimeout(5)    # reset timeout value
         print("Server: Time to send image:", end - start)
 
@@ -238,14 +240,13 @@ class Server(Thread):
         """
         recv_data = b''             # packet of byte string data
         save_data = b''             # data to be saved to file
-        img_not_recvd = True        # flag to indicate if image has been recieved
+        img_not_recvd = True        # flag to indicate if image data hasn't started yet
+        recv_done = False           # flag to indicate full image has been received
         exp_seq = 0                 # expected sequence number initially 0
         pkt = Packet()
-        self.err_flag = 0
-        ack = Packet(-1, "ACK")     # make initial NAK
 
         # get image data from server until all data received
-        while True:
+        while not recv_done:
             try:
                 if img_not_recvd:
                     print("Server: Ready to receive image", flush=True)
@@ -253,12 +254,22 @@ class Server(Thread):
                 recv_data = self.server_socket.recv(self.pkt_size)
 
                 pkt.pkt_unpack(recv_data)
-                if pkt.seq_num != exp_seq or pkt.csum != pkt.checksum(pkt.seq_num, pkt.data):
+                if pkt.seq_num != exp_seq or pkt.csum != pkt.checksum():
                     pass
-                else:
+                elif pkt.get_fin_bit():
+                    recv_done = True
+                    exp_seq += len(pkt.data)        # increment expected sequence
                     save_data += pkt.data
-                    ack = Packet(exp_seq, "ACK")
-                    exp_seq += 1
+                else:
+                    exp_seq += len(pkt.data)        # increment expected sequence
+                    save_data += pkt.data
+
+                ack = Packet(src=self.server_port,
+                             dst=self.client_port,
+                             seq_num=0,
+                             ack_num=exp_seq,
+                             data=b'',
+                             ctrl_bits=0x10)
 
                 ack_pack = ack.pkt_pack()
                 self.server_socket.sendto(ack_pack, self.client_addr)
@@ -272,11 +283,12 @@ class Server(Thread):
                     pass
                 # image has been recieved
                 else:
-                    # write data into a file
-                    with open(filename, 'wb+') as server_img:
-                        server_img.write(save_data)
-                    print("Server: Received and saved image", flush=True)
                     break   # exit loop
+
+        # write data into a file
+        with open(filename, 'wb+') as server_img:
+            server_img.write(save_data)
+        print("Server: Received and saved image", flush=True)
 
     def run(self):
         """
@@ -313,7 +325,7 @@ class Server(Thread):
                 if msg == "download":
                     ack = Packet(self.server_port, self.client_port,
                                 0, msg_pkt.ack_num + 1,
-                                0, 0x10)
+                                b'', 0x10)
                     ack_pack = ack.pkt_pack()
                     self.server_socket.sendto(ack_pack, self.client_addr)
 
@@ -324,7 +336,7 @@ class Server(Thread):
                 elif msg == "upload":
                     ack = Packet(self.server_port, self.client_port,
                                 0, msg_pkt.ack_num + 1,
-                                0, 0x10)
+                                b'', 0x10)
                     ack_pack = ack.pkt_pack()
                     self.server_socket.sendto(ack_pack, self.client_addr)
 
@@ -334,11 +346,11 @@ class Server(Thread):
                 elif msg == "exit":
                     ack = Packet(self.server_port, self.client_port,
                                 0, msg_pkt.ack_num + 1,
-                                0, 0x10)
+                                b'', 0x10)
                     ack_pack = ack.pkt_pack()
                     self.server_socket.sendto(ack_pack, self.client_addr)
                     # send FIN packet
-                    fin = Packet(self.server_port, self.client_port, 0, 0, 0, 0x01)
+                    fin = Packet(self.server_port, self.client_port, 0, 0, b'', 0x01)
                     fin_pack = fin.pkt_pack()
                     self.server_socket.sendto(fin_pack, self.client_addr)
 
@@ -347,6 +359,7 @@ class Server(Thread):
                     fin_ack.pkt_unpack(recv_data)
 
                     if fin_ack.get_ack_bit:
+                        print("Server: Connection closed")
                         print("Server: Exiting...")
                         break
                     else:
@@ -357,7 +370,7 @@ class Server(Thread):
                     # send NAK
                     ack = Packet(self.server_port, self.client_port,
                                 0, 0,
-                                0, 0x10)
+                                b'', 0x10)
                     ack_pack = ack.pkt_pack()
                     self.server_socket.sendto(ack_pack, self.client_addr)
 
@@ -371,7 +384,7 @@ class Server(Thread):
                 # send NAK
                 ack = Packet(self.server_port, self.client_port,
                              0, 0,
-                             0, 0x10)
+                             b'', 0x10)
                 ack_pack = ack.pkt_pack()
                 self.server_socket.sendto(ack_pack, self.client_addr)
 
