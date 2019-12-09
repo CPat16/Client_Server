@@ -6,13 +6,14 @@ import sys
 from time import sleep
 from time import time
 from threading import Thread
+from random import randint, seed
 
 from PacketHandler import Packet
 from udp_timer import Timer
 
 
 class Client(Thread):
-    def __init__(self):
+    def __init__(self, crpt_ack, ack_loss):
         """
         Initializes Server Process
         """
@@ -30,13 +31,22 @@ class Client(Thread):
         # filename to save received image
         self.img_save_to = 'client_img.jpg'
 
+        self.crpt_ack_rate = crpt_ack           # recived ACK corruption rate inpercent
+        self.ack_loss_rate = ack_loss           # loss of ack packet rate
+        self.err_flag = 0
+
         self.N = 10      # set N to 10 for go-back-N frame size
+
+        seed(42)
 
         # create UDP client socket
         self.client_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
 
         # Recieving sockets timeout after 5 seconds
         self.client_socket.settimeout(5)
+
+    def gen_err_flag(self):
+        self.err_flag = randint(1, 100)
 
     def resend_window(self, window):
         for pkt in window:
@@ -145,6 +155,9 @@ class Client(Thread):
         # get image data from client until all data received
         while True:
             try:
+                if (self.crpt_ack_rate > 0 or self.ack_loss_rate > 0):
+                    self.gen_err_flag()
+
                 if img_not_recvd:
                     print("Client: Ready to receive image", flush=True)
                 # start = time()
@@ -154,12 +167,20 @@ class Client(Thread):
                 if pkt.seq_num != exp_seq or pkt.csum != pkt.checksum(pkt.seq_num, pkt.data):
                     pass
                 else:
-                    save_data += pkt.data
-                    ack = Packet(exp_seq, "ACK")
-                    exp_seq += 1
+                    if self.ack_loss_rate > 0 and self.err_flag <= self.ack_loss_rate:
+                        pass
+                    elif self.crpt_ack_rate > 0 and self.err_flag <= self.crpt_ack_rate:
+                        ack = Packet(exp_seq, "ACK")
+                        ack_pack = ack.pkt_pack()
+                        ack_pack = b"".join([ack_pack[0:1023], b"\x00"])
+                        self.client_socket.sendto(ack_pack, self.server_addr)
+                    else:
+                        save_data += pkt.data
+                        ack = Packet(exp_seq, "ACK")
+                        exp_seq += 1
 
-                ack_pack = ack.pkt_pack()
-                self.client_socket.sendto(ack_pack, self.server_addr)
+                        ack_pack = ack.pkt_pack()
+                        self.client_socket.sendto(ack_pack, self.server_addr)
 
                 if img_not_recvd:
                     img_not_recvd = False       # img data began streaming if it reaches this point

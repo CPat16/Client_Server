@@ -13,7 +13,7 @@ from udp_timer import Timer
 
 
 class Server(Thread):
-    def __init__(self, crpt_data, crpt_ack, data_loss, ack_loss):
+    def __init__(self, crpt_data, data_loss):
         """
         Initializes Server Process
         """
@@ -33,9 +33,7 @@ class Server(Thread):
         self.N = 10      # set N to 10 for go-back-N frame size
 
         self.crpt_data_rate = crpt_data         # packet corruption rate in percent
-        self.crpt_ack_rate = crpt_ack           # recived ACK corruption rate inpercent
         self.pkt_loss_rate = data_loss          # loss of data packet rate
-        self.ack_loss_rate = ack_loss           # loss of ack packet rate
         self.err_flag = 0
 
         seed(42)
@@ -98,8 +96,7 @@ class Server(Thread):
 
             # send data until end of file reached
             while read_data or len(window) > 0:
-                if (self.crpt_data_rate > 0 or self.crpt_ack_rate > 0 or
-                        self.pkt_loss_rate > 0 or self.ack_loss_rate > 0):
+                if (self.crpt_data_rate > 0 or self.pkt_loss_rate > 0):
                     self.gen_err_flag()
 
                 if my_timer.get_exception():
@@ -130,27 +127,19 @@ class Server(Thread):
                         pass
 
                 if recv_data:
-                    if self.ack_loss_rate > 0 and self.err_flag <= self.ack_loss_rate:
-                        pass     # pretend we never got ACK
+                    recv_pkt.pkt_unpack(recv_data)
+
+                    # Received NAK
+                    if recv_pkt.csum != recv_pkt.checksum(recv_pkt.seq_num, recv_pkt.data):
+                        pass
+                    # ACK is OK
                     else:
-
-                        # corrupt 1 byte of the recived ACK packet
-                        if self.crpt_ack_rate > 0 and self.err_flag <= self.crpt_ack_rate:
-                            recv_data = b"".join([recv_data[0:1023], b"\x00"])
-
-                        recv_pkt.pkt_unpack(recv_data)
-
-                        # Received NAK
-                        if recv_pkt.csum != recv_pkt.checksum(recv_pkt.seq_num, recv_pkt.data):
-                            pass
-                        # ACK is OK
+                        base = recv_pkt.seq_num + 1     # increment base
+                        window.pop(0)                   # remove acked packet from window
+                        if base == seq_num:
+                            my_timer.stop()
                         else:
-                            base = recv_pkt.seq_num + 1     # increment base
-                            window.pop(0)                   # remove acked packet from window
-                            if base == seq_num:
-                                my_timer.stop()
-                            else:
-                                my_timer.restart()
+                            my_timer.restart()
                 # Move to next data 
                 if len(window) < self.N and read_data:
                     read_data = img.read(self.data_size)
