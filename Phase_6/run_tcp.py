@@ -9,8 +9,8 @@ data_loss = input("Input percentage of data packet loss: ")
 ack_loss = input("Input percentage of ACK packet loss: ")
 
 # Runs process
-serv_thread = Server(int(crpt_data), int(crpt_ack), int(data_loss), int(ack_loss))  # init server thread
-client_thread = Client()  # init server thread
+serv_thread = Server(int(crpt_data), int(data_loss))  # init server thread
+client_thread = Client(int(crpt_ack), int(ack_loss))  # init server thread
 
 serv_thread.start()     # start server thread
 client_thread.start() # start client thread

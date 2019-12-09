@@ -14,7 +14,7 @@ from tcp_timer import Timer
 
 
 class Server(Thread):
-    def __init__(self, crpt_data, crpt_ack, data_loss, ack_loss):
+    def __init__(self, crpt_data, data_loss):
         """
         Initializes Server Process
         """
@@ -37,9 +37,7 @@ class Server(Thread):
         self.dev_rtt = 0    # inital deviation in rtt for timeout
 
         self.crpt_data_rate = crpt_data         # packet corruption rate in percent
-        self.crpt_ack_rate = crpt_ack           # recived ACK corruption rate inpercent
         self.pkt_loss_rate = data_loss          # loss of data packet rate
-        self.ack_loss_rate = ack_loss           # loss of ack packet rate
         self.err_flag = 0
 
         seed(42)
@@ -64,6 +62,8 @@ class Server(Thread):
 
     def resend_window(self, window):
         for pkt in range(self.N):
+            if pkt >= len(window):
+                break
             self.server_socket.sendto(window[pkt], self.client_addr)
 
     def est_timeout(self, sample_rtt):
@@ -137,8 +137,7 @@ class Server(Thread):
 
             # send data until all data acked
             while read_data or len(window) > 0:
-                if (self.crpt_data_rate > 0 or self.crpt_ack_rate > 0 or
-                        self.pkt_loss_rate > 0 or self.ack_loss_rate > 0):
+                if (self.crpt_data_rate > 0 or self.pkt_loss_rate > 0):
                     self.gen_err_flag()
 
                 if my_timer.get_exception():
@@ -187,37 +186,30 @@ class Server(Thread):
                         pass
 
                 if recv_data:
-                    if self.ack_loss_rate > 0 and self.err_flag <= self.ack_loss_rate:
-                        pass     # pretend we never got ACK
+                    recv_pkt.pkt_unpack(recv_data)
+
+                    # Received NAK
+                    if recv_pkt.csum != recv_pkt.checksum():
+                        pass
+                    # ACK is OK
                     else:
-                        # corrupt 1 byte of the recived ACK packet
-                        if self.crpt_ack_rate > 0 and self.err_flag <= self.crpt_ack_rate:
-                            recv_data = b"".join([recv_data[0:1023], b"\x00"])
-
-                        recv_pkt.pkt_unpack(recv_data)
-
-                        # Received NAK
-                        if recv_pkt.csum != recv_pkt.checksum():
-                            pass
-                        # ACK is OK
-                        else:
-                            if recv_pkt.ack_num > base:
-                                dupl_cnt = 0                    # reset duplicate count
-                                base = recv_pkt.ack_num         # increment base
-                                window.pop(0)                   # remove acked packet from window
-                                if len(window) == 0:            # no unacked packets
-                                    my_timer.stop()
-                                else:                           # unacked packets remaining
-                                    my_timer.restart()
-                                self.N += 1
-                            elif recv_pkt.ack_num == base:
-                                dupl_cnt += 1
-                            # received 3 duplicate ACKs
-                            if dupl_cnt >= 3:
-                                dupl_cnt = 0
-                                self.N = ceil(self.N / 2)
-                                self.resend_window(window)
+                        if recv_pkt.ack_num > base:
+                            dupl_cnt = 0                    # reset duplicate count
+                            base = recv_pkt.ack_num         # increment base
+                            window.pop(0)                   # remove acked packet from window
+                            if len(window) == 0:            # no unacked packets
+                                my_timer.stop()
+                            else:                           # unacked packets remaining
                                 my_timer.restart()
+                            self.N += 1
+                        elif recv_pkt.ack_num == base:
+                            dupl_cnt += 1
+                        # received 3 duplicate ACKs
+                        if dupl_cnt >= 3:
+                            dupl_cnt = 0
+                            self.N = ceil(self.N / 2)
+                            self.resend_window(window)
+                            my_timer.restart()
 
                 sleep(0.0001)
 
