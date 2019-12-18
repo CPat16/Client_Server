@@ -11,6 +11,7 @@ from math import ceil
 
 from PacketHandler import Packet
 from tcp_timer import Timer
+import csv
 
 
 class Server(Thread):
@@ -111,6 +112,9 @@ class Server(Thread):
         my_timer.stop()         # so timer doesn't start counting
         my_timer.start()        # start timer thread
         rtt_start = {}
+        window_list = []
+        rtt_list = []
+        new_timeout = 0.1
 
         self.server_socket.settimeout(0)    # don't block when waiting for ACKs
 
@@ -136,6 +140,9 @@ class Server(Thread):
                 if (self.crpt_data_rate > 0 or self.pkt_loss_rate > 0):
                     self.gen_err_flag()
 
+                window_list.append(self.N)
+                rtt_list.append(new_timeout)
+                
                 # Move to next data 
                 if len(window) < self.N and read_data:
                     read_data = img.read(self.data_size)
@@ -174,6 +181,7 @@ class Server(Thread):
                     rtt_start[base] = time()
                     my_timer.restart()
 
+
                 # receive ACK
                 if recv_data:
                     recv_data = b''     # empty data buffer
@@ -204,8 +212,11 @@ class Server(Thread):
                             if len(window) == 0:            # no unacked packets
                                 my_timer.stop()
                             else:                           # unacked packets remaining
-                                my_timer.restart(self.est_timeout(rtt_end - rtt_start[prev_base]))
+                                new_timeout = rtt_end - rtt_start[prev_base]
+                                my_timer.restart(self.est_timeout(new_timeout))
+
                             self.N += 1
+
                         elif recv_pkt.ack_num == base:
                             dupl_cnt += 1
                         # received 3 duplicate ACKs
@@ -221,6 +232,15 @@ class Server(Thread):
         end = time()
         my_timer.kill()
         my_timer.join()
+
+        with open("window_size.csv", 'w+', newline='') as win_csv:
+            writer = csv.writer(win_csv, delimiter=',')
+            writer.writerow(window_list)
+
+        with open("rtt_times.csv", 'w+', newline='') as rtt_csv:
+            writer = csv.writer(rtt_csv, delimiter=',')
+            writer.writerow(rtt_list)
+
         self.N = 1                          #reset window size
         self.est_rtt = 0.1                  # reset estimated rtt
         self.dev_rtt = 0                    # reset deviation

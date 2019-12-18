@@ -326,7 +326,7 @@ class Client(Thread):
 
         self.recv_img(self.img_save_to)
 
-        ack = Packet()
+        """ ack = Packet()
         ack_data = b''
         request = "upload"
         req_pkt = Packet(src=self.client_port,
@@ -344,7 +344,7 @@ class Client(Thread):
 
         self.send_img(self.img_to_send)
 
-        sleep(5)
+        sleep(5) """
 
         ack = Packet()
         ack_data = b''
